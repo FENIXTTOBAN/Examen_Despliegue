@@ -1,0 +1,92 @@
+// 🚀 Jenkinsfile para api-orders (H2 Database)
+pipeline {
+    agent any
+
+    tools {
+        maven 'MAVEN_HOME'
+    }
+
+    environment {
+        // 🔗 CAMBIA ESTO POR TU URL DE GITHUB REAL
+        REPO_URL = 'https://github.com/tu-usuario/api-orders.git'
+
+        APP_NAME = 'api-orders'
+        DOCKER_IMAGE = 'api-orders:latest'
+        SONAR_CREDENTIAL_ID = 'key_sonarqube'
+    }
+
+    stages {
+        stage('📥 Checkout') {
+            steps {
+                echo "Clonando proyecto desde ${REPO_URL}..."
+                cleanWs()
+                // Se asume rama 'master' o 'main' según tu repo
+                git branch: 'master', url: "${REPO_URL}"
+            }
+        }
+
+        stage('🏗️ Build & Test') {
+            steps {
+                echo 'Compilando y ejecutando pruebas con JaCoCo...'
+                sh 'mvn clean install'
+            }
+        }
+
+        stage('Sonar Analysis') {
+            steps {
+                timeout(time: 10, unit: 'MINUTES') {
+                    echo '📊 === INICIO: ANÁLISIS DE CALIDAD ==='
+                    // Asegúrate de que 'sonarqube' sea el nombre exacto en Administrar Jenkins -> System
+                    withSonarQubeEnv('sonarqube') {
+                        sh """
+                            mvn org.sonarsource.scanner.maven:sonar-maven-plugin:3.9.0.2155:sonar \
+                            -Dsonar.projectKey=${APP_NAME} \
+                            -Dsonar.projectName=${APP_NAME} \
+                            -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml
+                        """
+                    }
+                    echo '✅ === FIN: ANÁLISIS DE CALIDAD COMPLETADO ==='
+                }
+            }
+        }
+
+        stage('🎯 Quality Gate') {
+            steps {
+                echo 'Esperando resultado de SonarQube...'
+                timeout(time: 5, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
+                }
+            }
+        }
+
+        stage('🚀 Docker Build & Deploy') {
+            steps {
+                script {
+                    echo 'Construyendo imagen Docker...'
+                    // Usamos -f pipeline/Dockerfile ya que el archivo está en la carpeta pipeline
+                    sh "docker build -f pipeline/Dockerfile -t ${DOCKER_IMAGE} ."
+
+                    echo 'Desplegando contenedor...'
+                    try {
+                        sh "docker stop ${APP_NAME} || true"
+                        sh "docker rm ${APP_NAME} || true"
+                    } catch (Exception e) {
+                        echo "No había contenedores previos."
+                    }
+
+                    // Ejecución en puerto 8080 (que es el definido en tu application.yaml)
+                    sh "docker run -d --name ${APP_NAME} -p 8080:8080 ${DOCKER_IMAGE}"
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo '✅ ¡Pipeline finalizado con éxito!'
+        }
+        failure {
+            echo '❌ El pipeline falló.'
+        }
+    }
+}
